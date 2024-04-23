@@ -9,7 +9,7 @@ var fs = require('fs'),
   dirname = path.dirname,
   exists =
     (fs.accessSync &&
-      function(path) {
+      function (path) {
         try {
           fs.accessSync(path);
         } catch (e) {
@@ -73,13 +73,34 @@ function bindings(opts) {
   }
 
   // maps `defaults` onto `opts` object
-  Object.keys(defaults).map(function(i) {
+  Object.keys(defaults).map(function (i) {
     if (!(i in opts)) opts[i] = defaults[i];
   });
 
   // Get the module root
   if (!opts.module_root) {
-    opts.module_root = exports.getRoot(exports.getFileName());
+    const fileName = exports.getFileName();
+    let module_root = exports.getRoot(fileName);
+
+    // Filename is undefined when eval() was used to execute code with bindings in it. We don't have a valid
+    // module-root in that case and need to use a heuristic to hopefully find the correct directory.
+    if (!fileName) {
+      // Derive module_root from ".node"-filename
+      const possible_package_name = opts.bindings.replace('.node', '');
+      let best_score = -1;
+      let best_match = "";
+      for (const file of fs.readdirSync(join(module_root, 'node_modules'))) {
+        const current_score = similarity(file, possible_package_name);
+        if (current_score > best_score) {
+          best_score = current_score;
+          best_match = file;
+        }
+      }
+
+      module_root = join(module_root, 'node_modules', best_match);
+    }
+
+    opts.module_root = module_root;
   }
 
   // Ensure the given bindings name ends with .node
@@ -103,7 +124,7 @@ function bindings(opts) {
   for (; i < l; i++) {
     n = join.apply(
       null,
-      opts.try[i].map(function(p) {
+      opts.try[i].map(function (p) {
         return opts[p] || p;
       })
     );
@@ -115,11 +136,9 @@ function bindings(opts) {
       }
       return b;
     } catch (e) {
-      if (
-        e.code !== 'MODULE_NOT_FOUND' &&
+      if (e.code !== 'MODULE_NOT_FOUND' &&
         e.code !== 'QUALIFIED_PATH_RESOLUTION_FAILED' &&
-        !/not find/i.test(e.message)
-      ) {
+        !/not find/i.test(e.message)) {
         throw e;
       }
     }
@@ -127,16 +146,60 @@ function bindings(opts) {
 
   err = new Error(
     'Could not locate the bindings file. Tried:\n' +
-      tries
-        .map(function(a) {
-          return opts.arrow + a;
-        })
-        .join('\n')
+    tries
+      .map(function (a) {
+        return opts.arrow + a;
+      })
+      .join('\n')
   );
   err.tries = tries;
   throw err;
 }
 module.exports = exports = bindings;
+
+/**
+ * Returns a similarity score for two strings.
+ * See: https://stackoverflow.com/questions/10473745/compare-strings-javascript-return-of-likely
+ */
+function similarity(s1, s2) {
+  var longer = s1;
+  var shorter = s2;
+  if (s1.length < s2.length) {
+    longer = s2;
+    shorter = s1;
+  }
+  var longerLength = longer.length;
+  if (longerLength == 0) {
+    return 1.0;
+  }
+  return (longerLength - editDistance(longer, shorter)) / parseFloat(longerLength);
+}
+function editDistance(s1, s2) {
+  s1 = s1.toLowerCase();
+  s2 = s2.toLowerCase();
+
+  var costs = new Array();
+  for (var i = 0; i <= s1.length; i++) {
+    var lastValue = i;
+    for (var j = 0; j <= s2.length; j++) {
+      if (i == 0)
+        costs[j] = j;
+      else {
+        if (j > 0) {
+          var newValue = costs[j - 1];
+          if (s1.charAt(i - 1) != s2.charAt(j - 1))
+            newValue = Math.min(Math.min(newValue, lastValue),
+              costs[j]) + 1;
+          costs[j - 1] = lastValue;
+          lastValue = newValue;
+        }
+      }
+    }
+    if (i > 0)
+      costs[s2.length] = lastValue;
+  }
+  return costs[s2.length];
+}
 
 /**
  * Gets the filename of the JavaScript file that invokes this function.
@@ -152,7 +215,7 @@ exports.getFileName = function getFileName(calling_file) {
 
   Error.stackTraceLimit = 10;
 
-  Error.prepareStackTrace = function(e, st) {
+  Error.prepareStackTrace = function (e, st) {
     for (var i = 0, l = st.length; i < l; i++) {
       fileName = st[i].getFileName();
       if (fileName !== __filename) {
@@ -174,6 +237,10 @@ exports.getFileName = function getFileName(calling_file) {
   // cleanup
   Error.prepareStackTrace = origPST;
   Error.stackTraceLimit = origSTL;
+
+  if (!fileName) {
+    return "";
+  }
 
   // handle filename that starts with "file://"
   var fileSchema = 'file://';
@@ -212,8 +279,8 @@ exports.getRoot = function getRoot(file) {
       // Got to the top
       throw new Error(
         'Could not find module root given file: "' +
-          file +
-          '". Do you have a `package.json` file? '
+        file +
+        '". Do you have a `package.json` file? '
       );
     }
     // Try the parent dir next
